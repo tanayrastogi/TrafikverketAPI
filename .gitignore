@@ -132,6 +132,7 @@ dmypy.json
 csv/
 json/
 plots/
+images/
 
 # Any XML file
 *.xml

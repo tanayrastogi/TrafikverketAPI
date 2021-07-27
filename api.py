@@ -9,11 +9,13 @@ import plotly.graph_objects as go
 import pandas as pd
 import re 
 from collections import OrderedDict
+from PIL import Image
+from tqdm import tqdm
 
 ###################
 # Argument Parser #
 ###################
-def parse_args():
+def __parse_args():
     """
     Function to perform CLI operations. 
     """
@@ -29,13 +31,47 @@ def parse_args():
                         help='path to output csv file.')
     parser.add_argument('--to_plot', type=str, default=None,
                         help='path to output HTML-plot file.')
-    parser.add_argument('--verbose', type=bool, default=True,
+    parser.add_argument('--to_images', type=str, default=None,
+                        help='path to output camera images.')
+    parser.add_argument('--verbose', type=str, default="True",
                     help='print output from the request.')
     args = parser.parse_args()
     return args
 
+############
+# CSV file #
+############
+def __save_to_csv(data_to_csv, csv_filepath):
+    # Get all the columns in the data
+    csv_columns = list(data_to_csv[0].keys())
+    for data in data_to_csv:
+        if csv_columns != list(data.keys()):
+            for col in data.keys():
+                if col not in csv_columns:
+                    csv_columns.append(col)
+    csv_columns.sort()
 
-def plot_TrafficFlow(plot_data, plot_filepath):
+    # Default data when they column is missing from the fetch data
+    defaults = {key:'N/A' for key in csv_columns}
+
+    # Save CSV
+    try:
+        with open(csv_filepath, 'w') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=csv_columns, delimiter=';')
+            writer.writeheader()
+            for entry in data_to_csv:
+                entry = OrderedDict(sorted(entry.items()))
+                kv = defaults.copy()
+                kv.update(entry)
+                writer.writerow(kv)
+        print("Done!")
+    except IOError:
+        print("I/O error")
+
+####################
+# TrafficFlow Plot #
+####################
+def __plot_TrafficFlow(plot_data, plot_filepath):
     api_type = "TrafficFlow"
     # Pandas Dataframe
     df = pd.DataFrame.from_dict(plot_data)
@@ -55,7 +91,6 @@ def plot_TrafficFlow(plot_data, plot_filepath):
     df["lng"] = df["Geometry"].apply(lambda x: re.split('[( )]', x["WGS84"])[2])
     df["lat"] = df["lat"].astype(float)
     df["lng"] = df["lng"].astype(float)
-
 
     # Plot
     plot_data = [go.Scattermapbox(
@@ -101,8 +136,10 @@ def plot_TrafficFlow(plot_data, plot_filepath):
     fig.write_html(plot_filepath)
     print("Done!")
 
-
-def plot_Camera(plot_data, plot_filepath):
+###############
+# Camera Plot #
+###############
+def __plot_Camera(plot_data, plot_filepath):
     api_type = "Camera"
 
     # Pandas Dataframe
@@ -166,33 +203,36 @@ def plot_Camera(plot_data, plot_filepath):
     print("Done!")
 
 
-def save_to_csv(data_to_csv, csv_filepath):
-    # Get all the columns in the data
-    csv_columns = list(data_to_csv[0].keys())
-    for data in data_to_csv:
-        if csv_columns != list(data.keys()):
-            for col in data.keys():
-                if col not in csv_columns:
-                    csv_columns.append(col)
-    csv_columns.sort()
+#################
+# Camera Images #
+#################
+def __save_images(data, image_folder, time_now):
+    # Pandas Dataframe
+    df = pd.DataFrame.from_dict(data)
+    # Fix index
+    df.set_index("Id", inplace=True)
+    df.sort_index(inplace=True)
+    # Photo URL for full size images
+    df["PhotoUrl"] = df["PhotoUrl"].apply(lambda x: x+"?type=fullsize&maxage=15")
 
-    # Default data when they column is missing from the fetch data
-    defaults = {key:'N/A' for key in csv_columns}
+    print("\n[INFO] Generating images ...", end=" ")
+    start_time = dt.utcnow()
+    for itr in tqdm(range(len(df.index))):
+        image_id = df.index.to_list()[itr]
 
-    # Save CSV
-    try:
-        with open(csv_filepath, 'w') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=csv_columns, delimiter=';')
-            writer.writeheader()
-            for entry in data_to_csv:
-                entry = OrderedDict(sorted(entry.items()))
-                kv = defaults.copy()
-                kv.update(entry)
-                writer.writerow(kv)
-        print("Done!")
-    except IOError:
-        print("I/O error")
+        # Image folder path
+        folder_path = os.path.join(image_folder, image_id)
 
+        # Check if the folder exits already. If not create one
+        if not os.path.isdir(folder_path):
+            os.makedirs(folder_path)
+        
+        # Read the image
+        img = Image.open(requests.get(df.loc[image_id, "PhotoUrl"], stream=True).raw)
+        img.save(os.path.join(folder_path, "{}.jpeg".format(time_now)))
+    
+    delta = dt.utcnow() - start_time
+    print("Done in {} sec".format(delta.seconds))
 
 
 
@@ -200,6 +240,7 @@ def get_data(xml,
              save_json=None,
              save_csv=None,
              save_plot=None,
+             save_images=None,
              verbose=True,
              URL = "https://api.trafikinfo.trafikverket.se/v2/data.json"):
   
@@ -218,11 +259,13 @@ def get_data(xml,
         "Error!!\nExpected JSON. Returned {}".format(response.headers["Content-Type"])
 
     # Data fetched on time
-    time_now = dt.now().strftime("%m%d%y_%H%M%S")
+    time_now = dt.now().strftime("%y%m%d_%H%M%S")
     data = response.json()["RESPONSE"]["RESULT"][0]
     api_type = list(data.keys())[0]
 
-    # Print output
+    ################
+    # Print output #
+    ################
     if verbose:
         text = "\nAPI: {}".format(api_type) + "\tNumber of entries: {}".format( len(data[list(data.keys())[0]]) ) 
         print(text)
@@ -231,6 +274,9 @@ def get_data(xml,
         print( data[list(data.keys())[0]][0] )
         print("\n")
 
+    #############
+    # JSON file #
+    #############
     if save_json is not None:
         # Check if dir exit otherwise make dir
         if not os.path.isdir(save_json):
@@ -242,6 +288,9 @@ def get_data(xml,
             json.dump(response.json(), outfile)
         print("Done!")
     
+    ############
+    # CSV file #
+    ############
     if save_csv is not None:
         # Check if dir exit otherwise make dir
         if not os.path.isdir(save_csv):
@@ -250,9 +299,11 @@ def get_data(xml,
         filepath = os.path.join(save_csv, "{}-{}.csv".format(api_type, time_now))
 
         # Saving to CSV
-        save_to_csv(data[api_type], filepath)
+        __save_to_csv(data[api_type], filepath)
 
-
+    #############
+    # Plot file #
+    #############
     if save_plot is not None:
         # Check if dir exit otherwise make dir
         if not os.path.isdir(save_plot):
@@ -261,16 +312,33 @@ def get_data(xml,
         filepath = os.path.join(save_plot, "{}-{}.html".format(api_type, time_now))
 
         if api_type == "TrafficFlow":
-            plot_TrafficFlow(data[api_type], filepath)
+            __plot_TrafficFlow(data[api_type], filepath)
         elif api_type == "Camera":
-            plot_Camera(data[api_type], filepath)
+            __plot_Camera(data[api_type], filepath)
     
+    ###############
+    # Images file #
+    ###############
+    if save_images is not None:
+        if api_type == "Camera":
+            # Check if dir exit otherwise make dir
+            if not os.path.isdir(save_images):
+                os.makedirs(save_images)
+            print("[INFO] Saving Plot at ", save_images,"....", end=" ")
+
+            __save_images(data[api_type], save_images, time_now)
+        
+        else:
+            print("[ERROR] API {} has no images to save... ".format(api_type))
+
+
+
     return response.json()
 
 
 if __name__ == "__main__":
     # Parse input arguments
-    args = parse_args()
+    args = __parse_args()
 
     # Read the XML file
     with open(args.xml, mode='r') as f:
@@ -281,4 +349,64 @@ if __name__ == "__main__":
                     save_json=args.to_json,
                     save_csv=args.to_csv,
                     save_plot=args.to_plot,
-                    verbose=args.verbose)
+                    save_images=args.to_images,
+                    verbose=False if args.verbose=="False" else True)
+
+    
+
+    # ###########
+    # # Testing #
+    # ###########
+    # filepath = "Camera.xml"
+    # # Read the XML file
+    # with open(filepath, mode='r') as f:
+    #     xml = f.read()
+    # URL = "https://api.trafikinfo.trafikverket.se/v2/data.json"
+
+    # # Send POST Request
+    # print("\n[INFO] Fetching data from Trafikverket ....", end=" ")
+    # response = requests.post(
+    #                     URL,
+    #                     headers={"Content-Type": "application/xml"},
+    #                     data=xml)
+    # print("Done!")
+
+    # # Make sure that the data is correctly recieved
+    # assert response.status_code == 200, \
+    #     "Error!!\n{}".format(response.json()["RESPONSE"]["RESULT"][0]["ERROR"])
+    # assert "application/json" in response.headers["Content-Type"], \
+    #     "Error!!\nExpected JSON. Returned {}".format(response.headers["Content-Type"])
+
+    # # Data fetched on time
+    # time_now = dt.now().strftime("%y%m%d_%H%M%S")
+    # data = response.json()["RESPONSE"]["RESULT"][0]
+    # api_type = list(data.keys())[0]
+
+
+    # image_folder = "images/"
+    # plot_data = data[api_type]
+
+    # # Pandas Dataframe
+    # df = pd.DataFrame.from_dict(plot_data)
+    # # Fix index
+    # df.set_index("Id", inplace=True)
+    # df.sort_index(inplace=True)
+    # # Photo URL for full size images
+    # df["PhotoUrl"] = df["PhotoUrl"].apply(lambda x: x+"?type=fullsize&maxage=15")
+
+    # start_time = dt.utcnow()
+    # for image_id in df.index:
+
+    #     # Image folder path
+    #     folder_path = os.path.join(image_folder, image_id)
+
+    #     # Check if the folder exits already. If not create one
+    #     if not os.path.isdir(folder_path):
+    #         os.makedirs(folder_path)
+        
+    #     # Read the image
+    #     img = Image.open(requests.get(df.loc[image_id, "PhotoUrl"], stream=True).raw)
+    #     img.save(os.path.join(folder_path, "{}.jpeg".format(time_now)))
+    # delta = dt.utcnow() - start_time
+
+
